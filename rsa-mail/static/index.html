@@ -1,0 +1,375 @@
+<html>
+  <head>
+	<script src="/jsbn.js">
+	</script>
+	<script src="/jsbn2.js">
+	</script>
+	<script src="/util.js">
+	</script>
+	<script src="/pem.js">
+	</script>
+	<script>
+	  const worker = new Worker('keygen.js');
+	  var is_creating_account = false;
+	  var current_account = undefined;
+	  worker.onmessage = async msg => {
+		  let [user, n, e, d] = msg.data;
+		  console.log('...done')
+		  create.innerText = "Creating Account...";
+		  await __do_register(user, n, e, d);
+		  create.innerText = "Create Account";
+		  is_creating_account = false;
+	  };
+	  worker.onerror = e => {
+		  console.log(e);
+	  }
+
+	  async function __do_register(user, n, e, d) {
+		  let request = await fetch('/register', {
+			  method: 'POST',
+			  headers: {
+				  'Content-Type': 'application/json;charset=utf-8'
+			  },
+			  body: JSON.stringify({
+				  user: user,
+				  pubkey: [n, e],
+			  })
+		  });
+		  if (request.ok) {
+			  localStorage.setItem(user, d)
+			  add_account(user);
+		  } else {
+			  alert(await request.text())
+		  }
+	  }
+
+	  function add_account(user) {
+		  let entry = document.createElement('div');
+		  entry.classList.add('account');
+		  entry.innerText = user;
+		  entry.onclick = async function() {
+			  if (current_inbox) {
+				  current_inbox.classList.remove('selected');
+			  }
+			  entry.classList.add('selected');
+			  current_inbox = entry;
+			  await load_messages(user);
+		  };
+		  accounts.appendChild(entry);
+
+		  let option = document.createElement('option');
+		  option.value = user;
+		  option.innerText = user;
+		  sender.appendChild(option);
+	  }
+
+	  async function disableaccount(account) {
+		  let d = new BigInteger(localStorage.getItem(account), 16);
+		  let [n, e] = await pubkey(account);
+		  let ciphertext = nbv(0xbadf00d).modPow(d, n).toString(16);
+		  let request = await fetch('/disable/' + account, {
+			  method: 'POST',
+			  headers: {
+				  'Content-Type': 'application/json;charset=utf-8'
+			  },
+			  body: ciphertext
+		  });
+		  if (!request.ok) {
+			  alert(await request.text())
+		  }
+	  }
+
+	  function register(user) {
+		  if (is_creating_account === true) {
+			  return;
+		  }
+		  is_creating_account = true;
+		  // KEY_SIZE is the bit-size for primes
+		  // if you have 2 1024-bit primes then you get a 2048-bit RSA key
+		  // (2^1024 * 2^1024) = 2^(1024 + 1024)
+
+		  const KEY_SIZE = 1024;
+		  var entropy = new Uint8Array(KEY_SIZE / 8);
+		  window.crypto.getRandomValues(entropy);
+		  worker.postMessage([user, hex(entropy)]);
+		  create.innerText = 'Generating RSA Key... (may take some time)';
+		  console.log("Generating RSA Keypair...")
+	  }
+
+	  async function import_key(file) {
+		  let [key, error] = parse_private_key(await file.text());
+
+		  if (key) {
+			  let [n, e, d] = key;
+			  __do_register(prompt("Username"), n, e, d);
+		  } else {
+			  alert(error);
+		  }
+	  }
+
+	  async function pubkey(account) {
+		  let request = await fetch('/pubkey/' + account);
+		  if (!request.ok) {
+			  console.log('No public key for ' + account);
+			  return undefined;
+		  }
+		  let [n, e] = await request.json();
+		  return [new BigInteger(n, 16), new BigInteger(e, 16)];
+	  }
+
+	  async function sendmessage(account, target, subject, msg) {
+		  let [n, e] = await pubkey(target);
+		  let bytes = new TextEncoder().encode(format_message(account, subject, msg));
+		  // Add padding, to make RSA secure :)
+		  let fill = '20'.repeat(Math.max(0, n.toString(16).length / 2 - bytes.length - 1));
+		  let plaintext = new BigInteger(hex(bytes) + fill, 16);
+		  if (!plaintext.mod(n).equals(plaintext)) {
+			  alert('Text too long!!!', msg.length, hex(bytes).length);
+			  return;
+		  }
+		  
+		  let ciphertext = plaintext.modPow(e, n).toString(16);
+
+		  let request = await fetch('/send/' + target, {
+			  method: 'POST',
+			  headers: {
+				  'Content-Type': 'application/json;charset=utf-8'
+			  },
+			  body: ciphertext
+		  });
+		  if (request.ok) {
+			  recipient.value = '';
+			  window.subject.value = '';
+			  message.value = '';
+		  } else {
+			  alert(await request.text());
+		  }
+	  }
+
+	  async function decryptmessages(account) {
+		  let d = new BigInteger(localStorage.getItem(account), 16);
+		  let [n, e] = await pubkey(account);
+		  let request = await fetch('/inbox/' + account);
+		  let messages = await request.json();
+		  return messages.map(msg => {
+			  let ciphertext = new BigInteger(msg, 16);
+			  let plaintext = ciphertext.modPow(d, n);
+			  let bytes = unhex(plaintext.toString(16).trimEnd());
+			  return new TextDecoder().decode(Uint8Array.from(bytes));
+		  });
+	  }
+
+	  function open_messages_tab() {
+		  messages.style.display = '';
+		  send.style.display = 'none';
+		  outbox.classList.remove('pressed');
+		  inbox.classList.add('pressed');
+	  }
+
+	  function back_to_inbox() {
+		  inboxlist.style.display = '';
+		  selectedmessage.style.display = 'none';
+	  }
+
+	  function open_send_tab() {
+		  messages.style.display = 'none';
+		  send.style.display = '';
+		  inbox.classList.remove('pressed');
+		  outbox.classList.add('pressed');
+	  }
+
+	  function show_message(from, date, subject, text) {
+		  frommsg.innerText = from;
+		  datemsg.innerText = date;
+		  subjectmsg.innerText = subject;
+		  textmsg.innerText = text;
+		  
+		  inboxlist.style.display = 'none';
+		  selectedmessage.style.display = '';
+	  }
+
+	  async function load_messages(user) {
+		  current_account = user;
+		  back_to_inbox();
+		  window.inboxlist.innerText = 'Loading...';
+		  let messages = await decryptmessages(user);
+		  window.inboxlist.innerText = '';
+		  messages.forEach(msg => {
+			  let entry = document.createElement('div');
+			  entry.classList.add('msg');
+			  let parsed = parse_message(msg);
+			  if (parsed) {
+				  let [from, date, subject, content] = parsed;
+				  let sender = document.createElement('div');
+				  entry.innerText = 'From ' + from + ': ' + subject;
+				  entry.onclick = () => {
+					  show_message(from, date, subject, content);
+				  };
+				  window.inboxlist.appendChild(entry);
+			  }
+		  });
+		  open_messages_tab();
+	  }
+
+	  var current_inbox = undefined;
+	  window.onload = function() {
+		  for (let i = 0; i < localStorage.length; i++) {
+			  let user = localStorage.key(i);
+			  add_account(user);
+		  }
+	  }
+	</script>
+
+	<style>
+	  body {
+		  padding: 0;
+		  margin: 0;
+	  }
+	  #content {
+		  display: flex;
+	  }
+
+	  #left {
+		  display: flex;
+		  flex-direction: column;
+		  width: 300px;
+		  padding: 5px;
+	  }
+
+	  #right {
+		  display: flex;
+		  flex-direction: column;
+		  flex-grow: 1;
+		  padding: 5px;
+	  }
+
+	  #messages {
+		  display: flex;
+		  flex-direction: column;
+		  flex-grow: 1;
+	  }
+
+	  #disable {
+		  margin-bottom: 20px;
+	  }
+
+	  .pressed {
+		  border-style: inset;
+	  }
+
+	  .account {
+		  border-bottom: 1px solid black;
+		  padding: 10px;
+		  cursor: pointer;
+	  }
+
+	  .account:last-child {
+		  border-bottom: none;
+	  }
+
+	  .account.selected {
+		  background: green;
+		  color: white;
+	  }
+
+	  .account:hover {
+		  background: lightgreen;
+		  color: black;
+	  }
+
+	  .msg {
+		  cursor: pointer;
+		  border-bottom: 1px solid black;
+		  padding: 10px;
+	  }
+
+	  .msg:last-child {
+		  border-bottom: none;
+	  }
+
+	  .msg:hover {
+		  background: lightgreen;
+		  color: black;
+	  }
+
+	  #send {
+		  display: flex;
+		  flex-direction: column;
+		  flex-grow: 1;
+	  }
+
+	  textarea {
+		  height: 300px;
+	  }
+
+	  #selectedmessage {
+		  margin-top: 20px;
+	  }
+
+	  #selectedmessage p {
+		  margin-left: 20px;
+	  }
+
+	  #frommsg::before {
+		  content: 'From: ';
+	  }
+	  #datemsg::before {
+		  content: 'Date: ';
+	  }
+	  #subjectmsg::before {
+		  content: 'Subject: ';
+	  }
+	</style>
+  </head>
+  <body>
+	<div id='content'>
+	  <div id='left'>
+		<button id='create' onclick='register(prompt("Username"))'>
+		  Create Account
+		</button>
+		<br><center>OR</center><br>
+		Import RSA Private Key:
+		<input id='import' type='file' onchange='import_key(this.files[0])'>
+		</input>
+		<hr>
+		Account Actions:
+		<button id='disable' onclick='disableaccount(current_account)'>
+		  Disable inbox for selected account
+		</button>
+		<div id='accounts'>
+		</div>
+	  </div>
+	  <div id='right'>
+		<div id='toolbar'>
+		  <button id='inbox' class='pressed' onclick='open_messages_tab()'>Inbox</button>
+		  <button id='outbox' onclick='open_send_tab()'>Send Message</button>
+		</div>
+		<div id='messages'>
+		  <div id='inboxlist'>
+			No Account selected
+		  </div>
+		  <div id='selectedmessage' style='display: none'>
+			<button id="backtoinbox" onclick='back_to_inbox()'> < Back </button>
+			<p id='frommsg'> </p>
+			<p id='datemsg'> </p>
+			<p id='subjectmsg'> </p>
+			<hr>
+			<p id='textmsg'> </p>
+		  </div>
+		</div>
+		<div id='send' style='display: none'>
+		  To:
+		  <input id='recipient' />
+		  From:
+		  <select id="sender">
+		  </select>
+		  Subject:
+		  <input id='subject' maxlength='50'/>
+		  Message:
+		  <textarea id='message' maxlength='140'></textarea>
+		  <button id='sendmsg' onclick='recipient.value.split(",").forEach(acc => sendmessage(sender.value, acc, subject.value, message.value))'> Send </button>
+		</div>
+	  </div>
+	</div>
+  </body>
+</html>

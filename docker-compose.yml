@@ -1,0 +1,27 @@
+version: "2.2"
+# ipv6 is not supported in version 3
+
+services:
+  rsamail_deps:
+    scale: 0
+    image: faust.cs.fau.de:5000/rsamail_deps
+    build:
+      context: rsa-mail/
+      dockerfile: Dockerfile.deps
+  rsamail:
+    restart: unless-stopped
+    image: faust.cs.fau.de:5000/rsamail
+    build: rsa-mail/
+    volumes:
+      - ./data:/data
+    ports:
+      - "5555:8000/tcp"
+
+
+networks:
+  default:
+    enable_ipv6: true
+    ipam:
+        driver: default
+        config:
+            - subnet: "fd42:d0ce:1342::/64"

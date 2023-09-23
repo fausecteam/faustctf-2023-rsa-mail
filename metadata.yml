@@ -1,0 +1,23 @@
+# Human-readable name of the service
+name: rsamail
+slug: rsa-mail
+authors:
+  - Florian Kothmeier <florian.kothmeier@fau.de>
+
+install:
+  container_images:
+    - faust.cs.fau.de:5000/rsamail_deps
+    - faust.cs.fau.de:5000/rsamail
+
+checker:
+  script_path: checker/rsamail.py
+  # Upper bound of how long the Checker Script takes to run (for a single team)
+  # Used for scheduling checks within a tick, executions taking longer *may* get terminated
+  max_duration: 90
+  debian_packages:
+    - chromium-driver
+    - python3-selenium
+    - python3-requests
+    - python3-pycryptodome
+  pip_packages:
+    - selenium-wire

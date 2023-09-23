@@ -1,0 +1,8 @@
+# This dockerfile contains all dependencies of the service
+# Therefore no internet access is needed to rebuild the service
+FROM alpine:latest
+RUN apk add --update --no-cache python3
+RUN python3 -m ensurepip
+
+COPY requirements.txt .
+RUN python3 -m pip install -r requirements.txt
